@@ -1,0 +1,30 @@
+NOTICE
+
+JAXAPI Image2 MCP
+https://github.com/oiy00/JAXAPI-imageMCP
+
+This product includes Image2 MCP, distributed under the Apache License,
+Version 2.0. The license text is in the LICENSE file.
+
+Upstream project retained for attribution:
+  Schyler0427/image2-mcp
+  https://github.com/Schyler0427/image2-mcp
+  Copyright remains with the upstream authors. The upstream source did not
+  include per-file copyright headers or a NOTICE file.
+
+Original project of that fork:
+  onlyone1019/image2-mcp
+  https://github.com/onlyone1019/image2-mcp
+
+Modifications in this distribution:
+  The fixed image gateway is https://jaxapi.top.
+  The upstream fixed image gateway was https://api.schyler.top.
+  The installer, Release gate, and agent instructions use repository
+  identity oiy00/JAXAPI-imageMCP.
+  API paths remain {BASE}/v1/images/generations and {BASE}/v1/images/edits.
+  Model IDs remain gpt-image-2 (Image 2.0) and gpt-image-2.5-sunburst
+  (Image 2.5).
+
+The strings https://api.schyler.top and Schyler0427/image2-mcp are retained
+in this NOTICE so the original gateway and repository identity stay attached
+to the redistributed work.

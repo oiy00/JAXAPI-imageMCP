@@ -1,0 +1,377 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+func TestServerVersion(t *testing.T) {
+	if serverVersion != "0.3.3" {
+		t.Fatalf("serverVersion = %q, want 0.3.3", serverVersion)
+	}
+}
+
+func TestServerListsGenerateImage2AndEditImage2Tools(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	server := newServer(root, t.TempDir())
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	var names []string
+	for tool, err := range clientSession.Tools(ctx, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, tool.Name)
+	}
+	if len(names) != 2 {
+		t.Fatalf("tools = %v, want [edit_image2 generate_image2]", names)
+	}
+	want := map[string]bool{"generate_image2": true, "edit_image2": true}
+	for _, n := range names {
+		if !want[n] {
+			t.Fatalf("unexpected tool %q", n)
+		}
+	}
+}
+
+func TestServerInstructionsAndToolDescriptions(t *testing.T) {
+	ctx := context.Background()
+	server := newServer(t.TempDir(), t.TempDir())
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	instructions := clientSession.InitializeResult().Instructions
+	metadata := instructions
+	tools, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		metadata += "\n" + tool.Description
+	}
+	for _, phrase := range []string{
+		"帮我生成一张图",
+		"使用 image2",
+		"Image 2.0",
+		"用 2.5 生图",
+		"Image 2.5",
+		"existing image",
+		"call edit_image2",
+		"Do not use Computer Use",
+		"Preserve the user's task details",
+		"~ paths",
+		`version: "2.5"`,
+		"Image 2.5 requests must pass version",
+	} {
+		if !strings.Contains(metadata, phrase) {
+			t.Errorf("metadata missing %q: %q", phrase, metadata)
+		}
+	}
+	if !strings.Contains(metadata, "OPENAI_IMAGE_MODEL") {
+		t.Errorf("metadata does not explain maintainer default override: %q", metadata)
+	}
+	for _, internalID := range []string{"gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.0", "gpt-image-2"} {
+		if strings.Contains(metadata, internalID) {
+			t.Errorf("metadata exposes internal identifier %q: %q", internalID, metadata)
+		}
+	}
+}
+
+func TestGenerateImage2ToolForwardsVersion25(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/generations" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		var request struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Model != "gpt-image-2.5-sunburst" {
+			t.Fatalf("model = %q, want gpt-image-2.5-sunburst", request.Model)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"b64_json": base64.StdEncoding.EncodeToString(png)}},
+		})
+	}))
+	defer apiServer.Close()
+
+	t.Setenv("OPENAI_IMAGE_API_KEY", "test-key")
+	t.Setenv("OPENAI_IMAGE_BASE_URL", apiServer.URL)
+	t.Setenv("OPENAI_IMAGE_MODEL", "")
+	outDir := t.TempDir()
+	ctx := context.Background()
+	server := newServer(t.TempDir(), t.TempDir())
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "generate_image2",
+		Arguments: generateParams{
+			Prompt:     "a test image",
+			Version:    "2.5",
+			OutputDir:  outDir,
+			OutputName: "generated.png",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %#v", result.Content)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "generated.png")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGenerateImage2ToolReportsMissingAPIKey(t *testing.T) {
+	t.Setenv("OPENAI_IMAGE_API_KEY", "")
+	t.Setenv("OPENAI_IMAGE_BASE_URL", "https://jaxapi.top")
+
+	ctx := context.Background()
+	root := t.TempDir()
+	server := newServer(root, t.TempDir())
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "generate_image2",
+		Arguments: generateParams{
+			Prompt: "test",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected tool error for missing OPENAI_IMAGE_API_KEY")
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("expected error content")
+	}
+	text, ok := result.Content[0].(*mcp.TextContent)
+	if !ok || !strings.Contains(text.Text, "OPENAI_IMAGE_API_KEY is required") {
+		t.Fatalf("unexpected error content: %#v", result.Content)
+	}
+}
+
+func TestEditImage2ToolReportsMissingAPIKey(t *testing.T) {
+	t.Setenv("OPENAI_IMAGE_API_KEY", "")
+	t.Setenv("OPENAI_IMAGE_BASE_URL", "https://jaxapi.top")
+
+	ctx := context.Background()
+	root := t.TempDir()
+	server := newServer(root, t.TempDir())
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "edit_image2",
+		Arguments: editParams{
+			Prompt:     "edit test",
+			ImagePaths: []string{"/tmp/test.png"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected tool error for missing OPENAI_IMAGE_API_KEY")
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("expected error content")
+	}
+	text, ok := result.Content[0].(*mcp.TextContent)
+	if !ok || !strings.Contains(text.Text, "OPENAI_IMAGE_API_KEY is required") {
+		t.Fatalf("unexpected error content: %#v", result.Content)
+	}
+}
+
+func TestEditImage2ToolReportsMissingImages(t *testing.T) {
+	t.Setenv("OPENAI_IMAGE_API_KEY", "test-key")
+
+	ctx := context.Background()
+	root := t.TempDir()
+	server := newServer(root, t.TempDir())
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+
+	t1, t2 := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "edit_image2",
+		Arguments: editParams{Prompt: "edit test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("expected tool error for missing images")
+	}
+	if len(result.Content) == 0 {
+		t.Fatal("expected error content")
+	}
+	text, ok := result.Content[0].(*mcp.TextContent)
+	if !ok || !strings.Contains(text.Text, "at least one image path is required") {
+		t.Fatalf("unexpected error content: %#v", result.Content)
+	}
+}
+
+func TestEditImage2ToolMapsQualityAndMask(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	inputDir := t.TempDir()
+	imagePath := filepath.Join(inputDir, "reference.png")
+	maskPath := filepath.Join(inputDir, "mask.png")
+	for _, path := range []string{imagePath, maskPath} {
+		if err := os.WriteFile(path, png, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/images/edits" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.FormValue("quality"); got != "high" {
+			t.Fatalf("quality = %q, want high", got)
+		}
+		if got := r.FormValue("model"); got != "gpt-image-2.5-sunburst" {
+			t.Fatalf("model = %q, want Image 2.5", got)
+		}
+		images := r.MultipartForm.File["image[]"]
+		if len(images) != 1 || images[0].Filename != "reference.png" {
+			t.Fatalf("image files = %#v", images)
+		}
+		masks := r.MultipartForm.File["mask"]
+		if len(masks) != 1 || masks[0].Filename != "mask.png" {
+			t.Fatalf("mask files = %#v", masks)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"b64_json": base64.StdEncoding.EncodeToString(png)}},
+		})
+	}))
+	defer apiServer.Close()
+
+	t.Setenv("OPENAI_IMAGE_API_KEY", "test-key")
+	t.Setenv("OPENAI_IMAGE_BASE_URL", apiServer.URL)
+	outDir := t.TempDir()
+	ctx := context.Background()
+	server := newServer(t.TempDir(), t.TempDir())
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	t1, t2 := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	clientSession, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "edit_image2",
+		Arguments: editParams{
+			Prompt:     "make it cinematic",
+			Version:    "Image 2.5",
+			ImagePaths: []string{imagePath},
+			MaskPath:   maskPath,
+			Quality:    "high",
+			OutputDir:  outDir,
+			OutputName: "edited.png",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %#v", result.Content)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "edited.png")); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1,1 +1,521 @@
-# JAXAPI-imageMCP
+# Image2 MCP
+
+JAX API 的 Image2 MCP 安装器。固定图片网关是 `https://jaxapi.top`。
+
+Image2 MCP 是一个给 Codex 使用的本地 STDIO MCP 服务。它提供两个工具：
+
+- `generate_image2`：调用固定网关的 Image 2.0 / Image 2.5 生图接口
+- `edit_image2`：图生图编辑（支持 Image 2.0 / Image 2.5、多图输入和可选蒙版）
+
+两个工具都会把接口返回的 `b64_json` 解码成 PNG 文件并保存到本地。
+
+## 安装
+
+```text
+请安装并配置 Image2 MCP：读取并严格执行 https://raw.githubusercontent.com/oiy00/JAXAPI-imageMCP/main/AGENT_INSTALL.md，除 API Key 外不要向我询问其他配置，完成安装和验证后再结束。
+```
+
+首次安装时客户只需输入 API Key；已有安装升级时会自动复用本地 Key，不会重复询问。
+安装失败时会报告失败阶段，不会自动反复安装或切换下载地址。Release 检查只请求一次 API。
+安装成功必须通过本地 MCP 握手、版本和两个工具的检查，验证过程不会调用生图接口。
+
+默认使用 Image 2.0。客户只需提供 API Key，Agent 会根据自然语言自动调用
+`generate_image2`；客户不需要填写模型 ID、Base URL 或 endpoint。需要 2.5 时直接说“用 2.5 生图”。
+
+## 维护者和高级安装
+
+默认图片网关：
+
+```text
+https://jaxapi.top
+```
+
+最终调用接口：
+
+```text
+{OPENAI_IMAGE_BASE_URL}/v1/images/generations
+{OPENAI_IMAGE_BASE_URL}/v1/images/edits
+```
+
+Key-only 安装无需配置或修改 Base URL；程序默认使用上述网关和对应图片端点。
+
+### 前置条件
+
+- 已安装 Codex
+- 有可用的 `OPENAI_IMAGE_API_KEY`
+- 推荐仓库已经发布 GitHub Release；这样使用者不需要安装 Go
+- 如果仓库还没有 Release，则需要本机安装 Go，让脚本从源码编译
+
+仓库里只需要提交源码和脚本，不需要提交编译后的 `dist/`。
+
+安装脚本有两种模式：
+
+- 本机有 Go：运行测试并从源码编译
+- 本机没有 Go：自动从 GitHub Releases 下载当前系统的预编译二进制
+
+### 从 GitHub 拉取后安装
+
+客户推荐使用 Key-only 安装。安装过程中只输入 API Key，保存到本地 `.env.local`，
+不会写入 Codex 配置，也不会提交到 GitHub。
+
+### macOS / Linux
+
+```bash
+git clone https://github.com/oiy00/JAXAPI-imageMCP.git
+cd JAXAPI-imageMCP
+./install.sh --key-only
+```
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/oiy00/JAXAPI-imageMCP.git
+cd JAXAPI-imageMCP
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -KeyOnly
+```
+
+安装脚本会做这些事：
+
+1. 仅交互式输入 `OPENAI_IMAGE_API_KEY`
+2. 写入本地 `.env.local`
+3. Key-only 模式直接下载固定 Release 的预编译二进制，不安装 Go，也不运行源码测试
+4. 写入 Codex MCP 配置，启动超时为 20 秒，工具执行超时为 600 秒
+5. 检查实际 MCP 握手、版本和工具列表，通过后输出 `Verification: OK`
+
+`.env.local`、`dist/`、`output/` 都已加入 `.gitignore`，不要提交到 GitHub。
+
+如果你想强制使用 GitHub Release 里的预编译二进制，即使本机安装了 Go：
+
+macOS / Linux：
+
+```bash
+./install.sh --key-only
+```
+
+Windows：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -KeyOnly
+```
+
+维护者如需自定义 URL 或模型，可使用高级交互模式；客户不需要使用该模式：
+
+macOS / Linux：
+
+```bash
+./install.sh --interactive
+```
+
+Windows：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Interactive
+```
+
+如果已经配置过 `.env.local`，后续只想重新构建：
+
+macOS / Linux：
+
+```bash
+./install.sh
+```
+
+Windows：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+### 本地配置
+
+交互式安装会生成 `.env.local`：
+
+```dotenv
+OPENAI_IMAGE_BASE_URL="https://jaxapi.top"
+```
+
+API Key 会保存在本地 `.env.local`，不在文档示例中展示。
+
+Agent 根据自然语言版本词选择工具参数：未提版本使用 Image 2.0，说“用 2.5 生图”则选择 Image 2.5。客户不填写模型 ID。
+
+Codex 配置里不会直接保存 key。启动 MCP 时，runner 脚本会读取本地
+`.env.local`。
+
+如果要换 key，重新运行交互式安装即可。网关和 endpoint 固定，不需要客户输入：
+
+```bash
+./install.sh --interactive
+```
+
+Windows：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Interactive
+```
+
+### Codex MCP 配置
+
+安装脚本会自动写入 `~/.codex/config.toml`。
+
+macOS / Linux 写入示例：
+
+```toml
+[mcp_servers.image2]
+command = "/path/to/image2-mcp/scripts/run-image2-mcp.sh"
+startup_timeout_sec = 20
+tool_timeout_sec = 600
+```
+
+Windows 写入示例：
+
+```toml
+[mcp_servers.image2]
+command = "powershell.exe"
+args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\path\\to\\image2-mcp\\scripts\\run-image2-mcp.ps1"]
+startup_timeout_sec = 20
+tool_timeout_sec = 600
+```
+
+安装完成后，重启 Codex 或开启新会话，让 Codex 重新加载 MCP 配置。
+
+### 自然语言调用
+
+直接描述任务即可，系统会自动路由到 `generate_image2`：
+
+- “帮我生成一张图”使用默认的 Image 2.0
+- “使用 image2 生成一张海边日落”使用默认的 Image 2.0
+- “用 2.5 生图，画一只戴帽子的猫”调用 `generate_image2`，并传入 `version=2.5`
+
+客户永远不需要提供模型 ID、Base URL 或 endpoint。除非维护者明确覆盖默认配置，
+固定网关始终是 `https://jaxapi.top`。
+
+如果 `~/.codex/config.toml` 已经存在 `[mcp_servers.image2]`，安装脚本不会覆盖它。
+这种情况下如果你移动了项目目录，需要手动更新里面的 runner 路径。
+
+如果你想让脚本覆盖已有的 `[mcp_servers.image2]` 配置：
+
+macOS / Linux：
+
+```bash
+./install.sh --configure-codex --force-config
+```
+
+Windows：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -ForceConfig
+```
+
+`--force-config` / `-ForceConfig` 会删除旧的 `[mcp_servers.image2]` 配置块，
+再写入当前项目路径对应的新配置。
+
+### 手动构建
+
+macOS / Linux：
+
+```bash
+go build -o ./dist/image2-mcp ./cmd/image2-mcp
+```
+
+Windows：
+
+```powershell
+go build -o .\dist\image2-mcp.exe .\cmd\image2-mcp
+```
+
+### 发布 GitHub Release
+
+仓库包含 GitHub Actions Release workflow。推送 `v*` tag 后会核对服务版本并自动构建：
+
+```text
+darwin/arm64
+darwin/amd64
+linux/arm64
+linux/amd64
+windows/arm64
+windows/amd64
+```
+
+发布方式：
+
+```bash
+git tag v0.3.3
+git push origin v0.3.3
+```
+
+Release 产物命名：
+
+```text
+image2-mcp_darwin_arm64.tar.gz
+image2-mcp_darwin_amd64.tar.gz
+image2-mcp_linux_arm64.tar.gz
+image2-mcp_linux_amd64.tar.gz
+image2-mcp_windows_arm64.zip
+image2-mcp_windows_amd64.zip
+```
+
+如果用户本机没有 Go，安装脚本会根据系统自动下载这些产物。
+
+### 真实生图测试
+
+macOS / Linux：
+
+```bash
+./install.sh --interactive --configure-codex --smoke
+```
+
+Windows：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Interactive -ConfigureCodex -Smoke
+```
+
+真实 smoke test 会调用一次接口，并生成：
+
+```text
+output/imagegen/mcp-smoke-test.png
+```
+
+注意：`--smoke` 会真实调用一次图片接口，可能消耗额度。
+
+要单独验证图生图接口，需要指定一张本地参考图的绝对路径：
+
+```bash
+RUN_IMAGE2_EDIT_SMOKE=1 \
+IMAGE2_EDIT_INPUT="/Users/you/Desktop/reference.png" \
+go test ./internal/image2 -run TestRealEditImage2Smoke -count=1 -v
+```
+
+该测试会生成：
+
+```text
+output/imagegen/mcp-edit-smoke-test.png
+```
+
+多图真实测试使用系统路径分隔符连接两张或更多图片。macOS / Linux 示例：
+
+```bash
+RUN_IMAGE2_EDIT_MULTI_SMOKE=1 \
+IMAGE2_EDIT_INPUTS="/Users/you/Desktop/subject.png:/Users/you/Desktop/style.png" \
+go test ./internal/image2 -run TestRealEditImage2MultiSmoke -count=1 -v
+```
+
+该测试会生成：
+
+```text
+output/imagegen/mcp-edit-multi-smoke-test.png
+```
+
+## Codex 里怎么调用
+
+### 文生图
+
+MCP 工具名：
+
+```text
+generate_image2
+```
+
+入参示例：
+
+```json
+{
+  "prompt": "A realistic studio desk setup",
+  "size": "1024x1024",
+  "output_dir": "/Users/you/Desktop/images",
+  "output_name": "desk.png"
+}
+```
+
+字段说明：
+
+```text
+prompt       必填，生图提示词
+version      可选；省略使用默认版本，使用 Image 2.5 时传字符串 "2.5"
+size         可选，默认 1024x1024
+output_dir   可选，图片保存目录；如果传入，必须是绝对路径
+output_name  可选，图片文件名；不传则自动生成 image2-时间戳.png
+```
+
+`output_dir` 规则：
+
+- 不传：保存到默认目录 `output/imagegen/`
+- 传绝对路径：保存到该目录
+- 支持 `~/` 开头的用户目录路径
+- 传其他相对路径：直接报错，不会调用生图接口
+
+macOS 绝对路径示例：
+
+```text
+/Users/you/Desktop/images
+```
+
+Windows 绝对路径示例：
+
+```text
+C:\Users\you\Desktop\images
+```
+
+返回示例：
+
+```json
+{
+  "file_path": "/Users/you/Desktop/images/desk.png",
+  "size": "1024x1024"
+}
+```
+
+### 图生图
+
+调用接口：
+
+```text
+POST {OPENAI_IMAGE_BASE_URL}/v1/images/edits
+Content-Type: multipart/form-data
+```
+
+入参示例：
+
+```json
+{
+  "prompt": "Add a cat sitting on the desk",
+  "image_paths": ["/Users/you/Desktop/images/desk.png"],
+  "size": "1024x1024",
+  "quality": "auto",
+  "mask_path": "/Users/you/Desktop/images/mask.png",
+  "output_dir": "/Users/you/Desktop/images",
+  "output_name": "desk-with-cat.png"
+}
+```
+
+多图输入时，数组顺序会原样保留：
+
+```json
+{
+  "prompt": "以第一张图为主体，以第二张图为服装和配色参考",
+  "image_paths": [
+    "/Users/you/Desktop/images/subject.png",
+    "/Users/you/Desktop/images/style.jpg"
+  ],
+  "output_name": "combined.png"
+}
+```
+
+字段说明：
+
+```text
+prompt       必填，编辑提示词
+version      可选；省略使用默认版本，使用 Image 2.5 时传字符串 "2.5"
+image_paths  必填，源图片绝对路径列表，至少一个
+size         可选，默认 1024x1024
+quality      可选，默认 auto
+mask_path    可选，蒙版图片绝对路径
+output_dir   可选，图片保存目录；如果传入，必须是绝对路径
+output_name  可选，图片文件名；不传则自动生成 image2-时间戳.png
+```
+
+`image_paths` 规则：
+
+- 至少传一个路径
+- 每个路径必须是绝对路径或 `~/` 路径，文件存在且为普通文件
+- 多图会按数组顺序上传
+
+`mask_path` 规则：
+
+- 不传或为空：不使用蒙版
+- 传绝对路径：文件必须存在
+
+`output_dir` 规则与 `generate_image2` 相同。
+
+返回示例与 `generate_image2` 相同：
+
+```json
+{
+  "file_path": "/Users/you/Desktop/images/desk-with-cat.png",
+  "size": "1024x1024"
+}
+```
+
+## 脚本参数
+
+macOS / Linux：
+
+```bash
+./install.sh --help
+```
+
+Windows：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Help
+```
+
+常用参数：
+
+```text
+--interactive / -Interactive        交互式输入 URL 和 key（高级维护者模式）
+--configure-codex / -ConfigureCodex 写入 Codex MCP 配置
+--force-config / -ForceConfig       覆盖已有 image2 MCP 配置
+--base-url / -BaseUrl               指定图片网关地址
+--prebuilt / -Prebuilt              强制下载 GitHub Release 二进制
+--skip-tests / -SkipTests           跳过测试，只构建
+--smoke / -Smoke                    调用真实接口做生图测试
+```
+
+## 常见问题
+
+### 需要提前打包吗？
+
+不需要提交打包产物。别人从 GitHub 拉取源码后，直接运行安装脚本即可。
+
+如果你已经发布 GitHub Release，用户不需要安装 Go；脚本会下载预编译二进制。
+如果还没有发布 Release，用户需要安装 Go，让脚本在本机编译。
+
+GitHub 仓库里不要提交 `dist/`。不同系统需要在本机编译自己的二进制。
+
+### 为什么 key 不写进 Codex config？
+
+为了避免泄漏。Codex config 只保存 runner 路径，真实 key 放在本地
+`.env.local`，并且 `.env.local` 不提交。
+
+### Codex 看不到 generate_image2 或 edit_image2 怎么办？
+
+确认 `~/.codex/config.toml` 里有 `[mcp_servers.image2]`，然后重启 Codex 或开启新会话。
+
+如果你已经配置过但后来移动了项目目录，检查 config 里的 runner 路径是否还是旧路径。
+
+可以运行本地连接检查，确认 MCP 能启动并提供两个工具；此命令不会生成图片：
+
+```bash
+~/.local/share/image2-mcp/scripts/run-image2-mcp.sh --verify-mcp
+```
+
+Windows PowerShell：
+
+```powershell
+& "$env:LOCALAPPDATA\image2-mcp\scripts\run-image2-mcp.ps1" --verify-mcp
+```
+
+成功时输出 `MCP verification: OK`。若失败，保留错误并排查对应阶段，避免反复重装。
+
+### 生图失败怎么办？
+
+MCP 连接正常并不代表客户的 Key 已获得 Image 2.5 权限。使用 2.5 时应传入
+`version: "2.5"`；网关权限或模型不可用需要按接口错误排查，工具不会自动降级到 2.0。
+429 和临时 5xx 最多尝试 3 次，其他 HTTP 错误不重试。一次 API 请求最多等待 180 秒，
+Codex 工具超时设为 600 秒以容纳这段等待；失败后不应由 Agent 再发起重复生图。
+
+检查：
+
+- `OPENAI_IMAGE_API_KEY` 是否正确
+- 固定网关是否可访问：`https://jaxapi.top`
+- `image_paths` 是否全部为本地绝对路径，且文件存在
+- `output_dir` 是否是绝对路径
+- 目标保存目录是否有写入权限
+
+## 许可与署名
+
+本仓库以 Apache License 2.0 再分发 Image2 MCP。
+原始项目是 Schyler0427/image2-mcp（https://github.com/Schyler0427/image2-mcp），其上游是 onlyone1019/image2-mcp（https://github.com/onlyone1019/image2-mcp）。
+本发行版的仓库身份是 `oiy00/JAXAPI-imageMCP`，固定图片网关是 `https://jaxapi.top`。
+原始版权、上游网关地址和变更说明见 `NOTICE`。
